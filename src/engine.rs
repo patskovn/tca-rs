@@ -7,21 +7,28 @@ use crate::event_sender_holder::EventSenderHolder;
 use crate::reducer::Reducer;
 use crate::store_event::StoreEvent;
 use futures::lock::Mutex;
+use std::ops::Deref;
+use std::ops::DerefMut;
 use std::sync::Arc;
+use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 
 type EventReceiver<T> = tokio::sync::mpsc::UnboundedReceiver<T>;
 
-#[derive(Clone)]
+struct EngineData<State, Action: Send + 'static> {
+    state: std::sync::Mutex<State>,
+    reducer: Box<dyn Reducer<State, Action> + Sync + Send + 'static>,
+    event_sender: Arc<EventSenderHolder<Action>>,
+    event_reciever: Mutex<EventReceiver<StoreEvent<Action>>>,
+    redraw_sender: std::sync::RwLock<Option<broadcast::Sender<()>>>,
+}
+
 pub struct StoreEngine<State, Action>
 where
     Action: Send + 'static,
     State: PartialEq + Clone + Send + 'static,
 {
-    state: Arc<std::sync::Mutex<State>>,
-    reducer: Arc<dyn Reducer<State, Action> + Sync + Send + 'static>,
-    event_sender: Arc<EventSenderHolder<Action>>,
-    event_reciever: Arc<Mutex<EventReceiver<StoreEvent<Action>>>>,
+    data: Arc<EngineData<State, Action>>,
 }
 
 impl<State, Action> StoreEngine<State, Action>
@@ -33,62 +40,73 @@ where
         let (event_sender, event_reciever) =
             tokio::sync::mpsc::unbounded_channel::<StoreEvent<Action>>();
 
-        Self {
-            state: Arc::new(std::sync::Mutex::new(state)),
-            reducer: Arc::new(reducer),
+        let (tx, _) = broadcast::channel::<()>(10);
+
+        let data = EngineData {
+            state: std::sync::Mutex::new(state),
+            reducer: Box::new(reducer),
             event_sender: Arc::new(EventSenderHolder::new(event_sender)),
-            event_reciever: Arc::new(Mutex::new(event_reciever)),
+            event_reciever: Mutex::new(event_reciever),
+            redraw_sender: std::sync::RwLock::new(Some(tx)),
+        };
+
+        Self {
+            data: Arc::new(data),
+        }
+    }
+
+    pub(crate) fn observe(&self) -> broadcast::Receiver<()> {
+        let sender = self.data.redraw_sender.read().unwrap();
+        match sender.deref() {
+            Some(sender) => sender.subscribe(),
+            None => {
+                let (autoclose_tx, _) = broadcast::channel(0);
+                let subscriber = autoclose_tx.subscribe();
+                drop(autoclose_tx);
+
+                subscriber
+            }
         }
     }
 
     pub(crate) fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap()
+        self.data.state.lock().unwrap()
     }
 
     pub fn run_loop(&self) -> tokio::task::AbortHandle {
-        let sender = self.event_sender.clone();
-
-        let receiver = self.event_reciever.clone();
-        let reducer = self.reducer.clone();
-
-        let state = self.state.clone();
+        let data = self.data.clone();
 
         let handle = tokio::spawn(async move {
-            let mut event_receiver = receiver.lock().await;
+            let mut event_receiver = data.event_reciever.lock().await;
             let mut join_set: JoinSet<()> = JoinSet::new();
 
-            let sender = sender;
-            let reducer = reducer.clone();
-
-            loop {
+            'run_loop: loop {
                 tokio::select! {
                     Some(event) = event_receiver.recv() => {
                         match event {
-                        StoreEvent::RedrawUI => {
-                            // let state = self.state.lock().await;
-                            break
-                        },
                         StoreEvent::Effect(effect) => {
                             log::debug!("Handling {:#?}", effect.value);
                             match effect.value {
                                 EffectValue::None => {}
                                 EffectValue::Send(action) => {
-                                    process(state.clone(), action, reducer.clone(), sender.clone()).await;
+                                    process(&data, action).await;
+
                                 }
                                 EffectValue::Quit => {
-                                    sender.send_event(StoreEvent::Quit);
+                                    let mut redraw = data.redraw_sender.write().unwrap();
+                                    *redraw = None;
+                                    break 'run_loop;
                                 }
                                 EffectValue::Async(job) => {
-                                    let any_sender = AnyActionSender::new(Box::new(sender.clone()));
+                                    let any_sender = AnyActionSender::new(Box::new(data.event_sender.clone()));
                                     let _andle = join_set.spawn(handle_async(job, any_sender));
                                 }
                             }
                         }
                         StoreEvent::Action(action) => {
                             // TODO: Should we handle it here cause slightly faster?
-                            sender.send_event(StoreEvent::Effect(Effect::send(action)));
-                        },
-                        StoreEvent::Quit => { break }
+                            data.event_sender.send_event(StoreEvent::Effect(Effect::send(action)));
+                        }
                         }
                     }
                 }
@@ -99,25 +117,33 @@ where
     }
 }
 
-async fn process<State, Action>(
-    state: Arc<std::sync::Mutex<State>>,
-    action: Action,
-    reducer: Arc<dyn Reducer<State, Action> + Sync + Send + 'static>,
-    event_sender: Arc<EventSenderHolder<Action>>,
-) where
-    State: Clone + Send + std::cmp::PartialEq,
+async fn process<State, Action>(data: &EngineData<State, Action>, action: Action)
+where
+    State: Clone + Send + PartialEq,
     Action: Send,
 {
     let effect = {
-        let mut state = state.lock().unwrap();
+        let mut state = data.state.lock().unwrap();
         let state_before = state.clone();
-        let effect = reducer.reduce(&mut state, action);
-        if state_before != *state {
-            event_sender.send_event(StoreEvent::RedrawUI);
+        let effect = data.reducer.reduce(&mut state, action);
+        let has_changes = state_before != *state;
+        drop(state);
+
+        if has_changes {
+            if let Ok(redraw) = data.redraw_sender.read() {
+                match redraw.deref() {
+                    Some(val) => {
+                        // We may have error here if buffer already filled in.
+                        // But that's okay, we'll just skip one redraw pass.
+                        let _ = val.send(());
+                    }
+                    None => {}
+                }
+            }
         }
         effect
     };
-    event_sender.send_event(StoreEvent::Effect(effect));
+    data.event_sender.send_event(StoreEvent::Effect(effect));
 }
 
 async fn handle_async<Action: Send + 'static>(
@@ -135,7 +161,7 @@ where
     type SendableAction = Action;
 
     fn send(&self, action: Action) {
-        self.event_sender.send(action);
+        self.data.event_sender.send(action);
     }
 }
 

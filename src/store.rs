@@ -1,6 +1,7 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
+use tokio::sync::broadcast;
 use tokio::task::AbortHandle;
 
 use crate::action_mapper::ActionMapper;
@@ -64,7 +65,12 @@ where
         }
     }
 
-    pub async fn observe_changes(&self) {}
+    pub fn observe(&self) -> broadcast::Receiver<()> {
+        match &self.engine {
+            EngineHolder::Parent(_parent) => todo!("Implement for scoped Store"),
+            EngineHolder::Engine(engine) => engine.value.observe(),
+        }
+    }
 
     pub fn scope<ChildAction>(
         &self,
@@ -133,11 +139,10 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::time::Duration;
-
-    use crate::Effect;
+    use anyhow::{anyhow, bail};
 
     use super::*;
+    use crate::Effect;
 
     #[derive(Default, Clone, PartialEq)]
     struct State {
@@ -147,10 +152,16 @@ mod test {
     #[derive(Debug)]
     enum Action {
         Increment,
+        Quit,
     }
 
     #[derive(Default)]
     struct Feature {}
+    impl Feature {
+        fn store() -> Store<State, Action> {
+            Store::new(Default::default(), Self::default())
+        }
+    }
 
     impl Reducer<State, Action> for Feature {
         fn reduce(&self, state: &mut State, action: Action) -> Effect<Action> {
@@ -159,17 +170,34 @@ mod test {
                     state.counter += 1;
                     Effect::none()
                 }
+                Action::Quit => Effect::quit(),
             }
         }
     }
 
     #[tokio::test]
-    async fn test_simple_action() {
-        let store = Store::new(Default::default(), Feature::default());
+    async fn test_simple_action() -> anyhow::Result<()> {
+        let store = Feature::store();
         store.send(Action::Increment);
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        // let state = store.state();
-        //
-        // assert_eq!(state.counter, 1);
+        store.observe().recv().await?;
+        assert_eq!(store.state().counter, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_closes_on_quit() -> anyhow::Result<()> {
+        let store = Feature::store();
+        store.send(Action::Increment);
+        store.observe().recv().await?;
+
+        let mut long_observe = store.observe();
+        store.send(Action::Quit);
+
+        assert_eq!(
+            long_observe.recv().await,
+            Err(broadcast::error::RecvError::Closed)
+        );
+
+        Ok(())
     }
 }
