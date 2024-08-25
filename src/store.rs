@@ -8,6 +8,9 @@ use crate::action_mapper::ActionMapper;
 use crate::action_sender::{ActionSender, AnyActionSender};
 use crate::change_observer::ChangeObserver;
 use crate::reducer::Reducer;
+use crate::state_mapper::StateMapper;
+use crate::state_provider::{AnyStateProvider, BorrowedState};
+use crate::StateProvider;
 
 use super::engine::StoreEngine;
 
@@ -19,38 +22,46 @@ where
     engine: EngineHolder<State, Action>,
 }
 
+#[derive(Clone)]
 enum EngineHolder<State, Action>
 where
     Action: std::fmt::Debug + Send + 'static,
     State: PartialEq + Clone + Send + 'static,
 {
     Engine(StoreEngineData<StoreEngine<State, Action>>),
-    Parent(AnyStoreLike<Action>),
+    Parent(AnyStoreLike<State, Action>),
 }
 
-struct AnyStoreLike<Action>
+#[derive(Clone)]
+struct AnyStoreLike<State, Action>
 where
     Action: std::fmt::Debug + Send + 'static,
+    State: Send + 'static,
 {
+    state_provider: Arc<AnyStateProvider<State>>,
     action_sender: Arc<AnyActionSender<Action>>,
     change_observer: Arc<dyn ChangeObserver + Send + Sync>,
 }
 
-impl<Action> AnyStoreLike<Action>
+impl<State, Action> AnyStoreLike<State, Action>
 where
     Action: std::fmt::Debug + Send + 'static,
+    State: Send + 'static,
 {
     fn new(
+        state_provider: Arc<AnyStateProvider<State>>,
         action_sender: Arc<AnyActionSender<Action>>,
         change_observer: Arc<dyn ChangeObserver + Send + Sync>,
     ) -> Self {
         Self {
+            state_provider,
             action_sender,
             change_observer,
         }
     }
 }
 
+#[derive(Clone)]
 struct StoreEngineData<T: Send + Sync> {
     value: Arc<T>,
     handle: AbortHandle,
@@ -76,45 +87,69 @@ where
         }
     }
 
-    fn new_from_parent(parent: AnyStoreLike<Action>) -> Self {
+    fn new_from_parent(parent: AnyStoreLike<State, Action>) -> Self {
         Self {
             engine: EngineHolder::Parent(parent),
         }
     }
 
-    pub fn state(&self) -> std::sync::MutexGuard<'_, State> {
+    pub fn state(&self) -> BorrowedState<'_, State> {
         match &self.engine {
             EngineHolder::Parent(_parent) => todo!("Implement for scoped Store"),
             EngineHolder::Engine(engine) => engine.value.state(),
         }
     }
 
-    pub fn scope<ChildAction>(
+    pub fn scope<ChildState, ChildAction>(
         &self,
+        state: impl Fn(&State) -> &ChildState + Clone + Send + Sync + 'static,
         action: impl Fn(ChildAction) -> Action + Send + Sync + 'static,
-    ) -> Store<State, ChildAction>
+    ) -> Store<ChildState, ChildAction>
     where
-        ChildAction: std::fmt::Debug + std::marker::Send + 'static,
+        ChildState: Send + Clone + std::cmp::PartialEq + 'static,
+        ChildAction: std::fmt::Debug + Send + 'static,
     {
         match &self.engine {
             EngineHolder::Parent(parent) => {
+                let mapped_state = StateMapper::new(Box::new(parent.state_provider.clone()), state);
+                let any_mapped_state = AnyStateProvider::new(Box::new(mapped_state));
+
                 let parent_sender = Box::new(parent.action_sender.clone());
                 let mapped_sender = ActionMapper::new(parent_sender, action);
                 let any_sender = AnyActionSender::new(Box::new(mapped_sender));
-                let parent_store_like =
-                    AnyStoreLike::new(Arc::new(any_sender), parent.change_observer.clone());
+                let parent_store_like = AnyStoreLike::new(
+                    Arc::new(any_mapped_state),
+                    Arc::new(any_sender),
+                    parent.change_observer.clone(),
+                );
                 Store::new_from_parent(parent_store_like)
             }
             EngineHolder::Engine(engine) => {
+                let mapped_state = StateMapper::new(Box::new(engine.value.clone()), state);
+                let any_mapped_state = AnyStateProvider::new(Box::new(mapped_state));
+
                 let parent = Box::new(engine.value.clone());
                 let mapped_sender = ActionMapper::new(parent, action);
                 let any_sender = AnyActionSender::new(Box::new(mapped_sender));
-                let parent_store_like =
-                    AnyStoreLike::new(Arc::new(any_sender), engine.value.clone());
+                let parent_store_like = AnyStoreLike::new(
+                    Arc::new(any_mapped_state),
+                    Arc::new(any_sender),
+                    engine.value.clone(),
+                );
 
                 Store::new_from_parent(parent_store_like)
             }
         }
+    }
+}
+
+impl<State, Action> Clone for Store<State, Action>
+where
+    Action: std::fmt::Debug + Send + 'static,
+    State: PartialEq + Clone + Send + 'static,
+{
+    fn clone(&self) -> Self {
+        self.scope(|s| s, |a| a)
     }
 }
 
@@ -133,11 +168,22 @@ where
 
 impl<T> ActionSender for Arc<T>
 where
-    T: ActionSender + std::marker::Sync,
+    T: ActionSender + Sync,
 {
     type SendableAction = T::SendableAction;
     fn send(&self, action: Self::SendableAction) {
         self.deref().send(action);
+    }
+}
+
+impl<T> StateProvider for Arc<T>
+where
+    T: StateProvider + Sync,
+{
+    type State = T::State;
+
+    fn state(&self) -> BorrowedState<'_, Self::State> {
+        self.deref().state()
     }
 }
 

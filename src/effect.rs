@@ -1,6 +1,5 @@
 use crate::action_mapper::ActionMapper;
 use crate::action_sender::AnyActionSender;
-use futures::FutureExt;
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
@@ -32,23 +31,27 @@ where
             EffectValue::None => Effect::none(),
             EffectValue::Quit => Effect::quit(),
             EffectValue::Send(a) => Effect::send(map(a)),
-            EffectValue::Async(a) => Effect::<MappedAction>::run(|sender| {
+            EffectValue::Async(a) => Effect::<MappedAction>::run(|sender| async move {
                 let mapper = ActionMapper::new(Box::new(sender), map);
                 let sender = AnyActionSender::new(Box::new(mapper));
-
-                async move { a(sender).await }.boxed()
+                a(sender).await
             }),
         }
     }
 
-    pub fn run<T>(job: T) -> Self
+    pub fn run<T, Fut>(job: T) -> Self
     where
-        T: FnOnce(AnyActionSender<Action>) -> Pin<Box<dyn Future<Output = ()> + Send>>
-            + Send
-            + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+        T: FnOnce(AnyActionSender<Action>) -> Fut + Send + 'static,
     {
+        let boxed_job: AsyncActionJob<Action> = Box::new(move |sender: AnyActionSender<Action>| {
+            // Call the original `job` to get the future
+            let fut = job(sender);
+            // Box the future and pin it
+            Box::pin(fut)
+        });
         Self {
-            value: EffectValue::Async(Box::new(job)),
+            value: EffectValue::Async(boxed_job),
         }
     }
 

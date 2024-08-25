@@ -6,7 +6,9 @@ use crate::effect::Effect;
 use crate::effect::EffectValue;
 use crate::event_sender_holder::EventSenderHolder;
 use crate::reducer::Reducer;
+use crate::state_provider::BorrowedState;
 use crate::store_event::StoreEvent;
+use crate::StateProvider;
 use futures::lock::Mutex;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -23,6 +25,7 @@ struct EngineData<State, Action: Send + 'static> {
     redraw_sender: std::sync::RwLock<Option<broadcast::Sender<()>>>,
 }
 
+#[derive(Clone)]
 pub struct StoreEngine<State, Action>
 where
     Action: Send + 'static,
@@ -53,10 +56,6 @@ where
         Self {
             data: Arc::new(data),
         }
-    }
-
-    pub(crate) fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.data.state.lock().unwrap()
     }
 
     pub fn run_loop(&self) -> tokio::task::AbortHandle {
@@ -161,13 +160,25 @@ where
 
 impl<State, Action> ActionSender for StoreEngine<State, Action>
 where
-    Action: std::marker::Send,
-    State: PartialEq + Clone + std::marker::Send,
+    Action: Send,
+    State: PartialEq + Clone + Send,
 {
     type SendableAction = Action;
 
     fn send(&self, action: Action) {
         self.data.event_sender.send(action);
+    }
+}
+
+impl<State, Action> StateProvider for StoreEngine<State, Action>
+where
+    Action: Send,
+    State: PartialEq + Clone + Send,
+{
+    type State = State;
+
+    fn state(&self) -> BorrowedState<'_, State> {
+        self.data.state.lock().unwrap()
     }
 }
 

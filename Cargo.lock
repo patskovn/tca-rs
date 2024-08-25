@@ -373,7 +373,9 @@ dependencies = [
  "anyhow",
  "async-trait",
  "futures",
+ "lock_api",
  "log",
+ "parking_lot",
  "tokio",
 ]
 
