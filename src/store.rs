@@ -17,7 +17,7 @@ use super::engine::StoreEngine;
 pub struct Store<State, Action>
 where
     Action: std::fmt::Debug + Send + 'static,
-    State: PartialEq + Clone + Send + 'static,
+    State: PartialEq + Clone + Send + Sync + 'static,
 {
     engine: EngineHolder<State, Action>,
 }
@@ -26,7 +26,7 @@ where
 enum EngineHolder<State, Action>
 where
     Action: std::fmt::Debug + Send + 'static,
-    State: PartialEq + Clone + Send + 'static,
+    State: PartialEq + Clone + Send + Sync + 'static,
 {
     Engine(StoreEngineData<StoreEngine<State, Action>>),
     Parent(AnyStoreLike<State, Action>),
@@ -36,7 +36,7 @@ where
 struct AnyStoreLike<State, Action>
 where
     Action: std::fmt::Debug + Send + 'static,
-    State: Send + 'static,
+    State: Send + Sync + 'static,
 {
     state_provider: Arc<AnyStateProvider<State>>,
     action_sender: Arc<AnyActionSender<Action>>,
@@ -46,7 +46,7 @@ where
 impl<State, Action> AnyStoreLike<State, Action>
 where
     Action: std::fmt::Debug + Send + 'static,
-    State: Send + 'static,
+    State: Send + Sync + 'static,
 {
     fn new(
         state_provider: Arc<AnyStateProvider<State>>,
@@ -70,7 +70,7 @@ struct StoreEngineData<T: Send + Sync> {
 impl<State, Action> Store<State, Action>
 where
     Action: std::fmt::Debug + Send + 'static,
-    State: PartialEq + Clone + Send + 'static,
+    State: PartialEq + Clone + Send + Sync + 'static,
 {
     pub fn new<R: Reducer<State, Action> + Sync + Send + 'static>(
         state: State,
@@ -106,7 +106,7 @@ where
         action: impl Fn(ChildAction) -> Action + Send + Sync + 'static,
     ) -> Store<ChildState, ChildAction>
     where
-        ChildState: Send + Clone + std::cmp::PartialEq + 'static,
+        ChildState: Send + Sync + Clone + std::cmp::PartialEq + 'static,
         ChildAction: std::fmt::Debug + Send + 'static,
     {
         match &self.engine {
@@ -146,7 +146,7 @@ where
 impl<State, Action> Clone for Store<State, Action>
 where
     Action: std::fmt::Debug + Send + 'static,
-    State: PartialEq + Clone + Send + 'static,
+    State: PartialEq + Clone + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         self.scope(|s| s, |a| a)
@@ -156,7 +156,7 @@ where
 impl<State, Action> ChangeObserver for Store<State, Action>
 where
     Action: std::fmt::Debug + Send + 'static,
-    State: PartialEq + Clone + Send + 'static,
+    State: PartialEq + Clone + Send + Sync + 'static,
 {
     fn observe(&self) -> broadcast::Receiver<()> {
         match &self.engine {
@@ -199,7 +199,7 @@ where
 impl<State, Action> ActionSender for Store<State, Action>
 where
     Action: std::fmt::Debug + Send + 'static,
-    State: PartialEq + Clone + Send + 'static,
+    State: PartialEq + Clone + Send + Sync + 'static,
 {
     type SendableAction = Action;
 
@@ -214,7 +214,7 @@ where
 impl<State, Action> Drop for Store<State, Action>
 where
     Action: std::fmt::Debug + Send + 'static,
-    State: PartialEq + Clone + Send + 'static,
+    State: PartialEq + Clone + Send + Sync + 'static,
 {
     fn drop(&mut self) {
         match &self.engine {

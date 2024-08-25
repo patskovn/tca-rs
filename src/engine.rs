@@ -29,7 +29,7 @@ struct EngineData<State, Action: Send + 'static> {
 pub struct StoreEngine<State, Action>
 where
     Action: Send + 'static,
-    State: PartialEq + Clone + Send + 'static,
+    State: PartialEq + Clone + Send + Sync + 'static,
 {
     data: Arc<EngineData<State, Action>>,
 }
@@ -37,7 +37,7 @@ where
 impl<State, Action> StoreEngine<State, Action>
 where
     Action: std::fmt::Debug + Send,
-    State: PartialEq + Clone + Send + 'static,
+    State: PartialEq + Clone + Send + Sync + 'static,
 {
     pub fn new(state: State, reducer: impl Reducer<State, Action> + Sync + Send + 'static) -> Self {
         let (event_sender, event_reciever) =
@@ -104,7 +104,7 @@ where
 
 async fn process<State, Action>(data: &EngineData<State, Action>, action: Action)
 where
-    State: Clone + Send + PartialEq,
+    State: Clone + Send + Sync + PartialEq,
     Action: Send,
 {
     let effect = {
@@ -140,8 +140,8 @@ async fn handle_async<Action: Send + 'static>(
 
 impl<State, Action> ChangeObserver for StoreEngine<State, Action>
 where
-    Action: std::marker::Send,
-    State: PartialEq + Clone + std::marker::Send,
+    Action: Send,
+    State: PartialEq + Clone + Send + Sync,
 {
     fn observe(&self) -> broadcast::Receiver<()> {
         let sender = self.data.redraw_sender.read().unwrap();
@@ -161,7 +161,7 @@ where
 impl<State, Action> ActionSender for StoreEngine<State, Action>
 where
     Action: Send,
-    State: PartialEq + Clone + Send,
+    State: PartialEq + Clone + Send + Sync,
 {
     type SendableAction = Action;
 
@@ -173,7 +173,7 @@ where
 impl<State, Action> StateProvider for StoreEngine<State, Action>
 where
     Action: Send,
-    State: PartialEq + Clone + Send,
+    State: PartialEq + Clone + Send + Sync,
 {
     type State = State;
 
