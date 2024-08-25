@@ -1,5 +1,6 @@
 use crate::action_sender::ActionSender;
 use crate::action_sender::AnyActionSender;
+use crate::change_observer::ChangeObserver;
 use crate::effect::AsyncActionJob;
 use crate::effect::Effect;
 use crate::effect::EffectValue;
@@ -8,7 +9,6 @@ use crate::reducer::Reducer;
 use crate::store_event::StoreEvent;
 use futures::lock::Mutex;
 use std::ops::Deref;
-use std::ops::DerefMut;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
@@ -52,20 +52,6 @@ where
 
         Self {
             data: Arc::new(data),
-        }
-    }
-
-    pub(crate) fn observe(&self) -> broadcast::Receiver<()> {
-        let sender = self.data.redraw_sender.read().unwrap();
-        match sender.deref() {
-            Some(sender) => sender.subscribe(),
-            None => {
-                let (autoclose_tx, _) = broadcast::channel(0);
-                let subscriber = autoclose_tx.subscribe();
-                drop(autoclose_tx);
-
-                subscriber
-            }
         }
     }
 
@@ -151,6 +137,26 @@ async fn handle_async<Action: Send + 'static>(
     event_sender: AnyActionSender<Action>,
 ) {
     job(event_sender).await
+}
+
+impl<State, Action> ChangeObserver for StoreEngine<State, Action>
+where
+    Action: std::marker::Send,
+    State: PartialEq + Clone + std::marker::Send,
+{
+    fn observe(&self) -> broadcast::Receiver<()> {
+        let sender = self.data.redraw_sender.read().unwrap();
+        match sender.deref() {
+            Some(sender) => sender.subscribe(),
+            None => {
+                let (autoclose_tx, _) = broadcast::channel(0);
+                let subscriber = autoclose_tx.subscribe();
+                drop(autoclose_tx);
+
+                subscriber
+            }
+        }
+    }
 }
 
 impl<State, Action> ActionSender for StoreEngine<State, Action>

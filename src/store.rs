@@ -6,6 +6,7 @@ use tokio::task::AbortHandle;
 
 use crate::action_mapper::ActionMapper;
 use crate::action_sender::{ActionSender, AnyActionSender};
+use crate::change_observer::ChangeObserver;
 use crate::reducer::Reducer;
 
 use super::engine::StoreEngine;
@@ -24,7 +25,30 @@ where
     State: PartialEq + Clone + Send + 'static,
 {
     Engine(StoreEngineData<StoreEngine<State, Action>>),
-    Parent(Arc<AnyActionSender<Action>>),
+    Parent(AnyStoreLike<Action>),
+}
+
+struct AnyStoreLike<Action>
+where
+    Action: std::fmt::Debug + Send + 'static,
+{
+    action_sender: Arc<AnyActionSender<Action>>,
+    change_observer: Arc<dyn ChangeObserver + Send + Sync>,
+}
+
+impl<Action> AnyStoreLike<Action>
+where
+    Action: std::fmt::Debug + Send + 'static,
+{
+    fn new(
+        action_sender: Arc<AnyActionSender<Action>>,
+        change_observer: Arc<dyn ChangeObserver + Send + Sync>,
+    ) -> Self {
+        Self {
+            action_sender,
+            change_observer,
+        }
+    }
 }
 
 struct StoreEngineData<T: Send + Sync> {
@@ -52,7 +76,7 @@ where
         }
     }
 
-    pub fn new_from_parent(parent: Arc<AnyActionSender<Action>>) -> Self {
+    fn new_from_parent(parent: AnyStoreLike<Action>) -> Self {
         Self {
             engine: EngineHolder::Parent(parent),
         }
@@ -65,13 +89,6 @@ where
         }
     }
 
-    pub fn observe(&self) -> broadcast::Receiver<()> {
-        match &self.engine {
-            EngineHolder::Parent(_parent) => todo!("Implement for scoped Store"),
-            EngineHolder::Engine(engine) => engine.value.observe(),
-        }
-    }
-
     pub fn scope<ChildAction>(
         &self,
         action: impl Fn(ChildAction) -> Action + Send + Sync + 'static,
@@ -81,18 +98,35 @@ where
     {
         match &self.engine {
             EngineHolder::Parent(parent) => {
-                let parent = Box::new(parent.clone());
-                let mapper = ActionMapper::new(parent, action);
-                let any_sender = AnyActionSender::new(Box::new(mapper));
-                Store::new_from_parent(Arc::new(any_sender))
+                let parent_sender = Box::new(parent.action_sender.clone());
+                let mapped_sender = ActionMapper::new(parent_sender, action);
+                let any_sender = AnyActionSender::new(Box::new(mapped_sender));
+                let parent_store_like =
+                    AnyStoreLike::new(Arc::new(any_sender), parent.change_observer.clone());
+                Store::new_from_parent(parent_store_like)
             }
             EngineHolder::Engine(engine) => {
                 let parent = Box::new(engine.value.clone());
-                let mapper = ActionMapper::new(parent, action);
-                let any_sender = AnyActionSender::new(Box::new(mapper));
+                let mapped_sender = ActionMapper::new(parent, action);
+                let any_sender = AnyActionSender::new(Box::new(mapped_sender));
+                let parent_store_like =
+                    AnyStoreLike::new(Arc::new(any_sender), engine.value.clone());
 
-                Store::new_from_parent(Arc::new(any_sender))
+                Store::new_from_parent(parent_store_like)
             }
+        }
+    }
+}
+
+impl<State, Action> ChangeObserver for Store<State, Action>
+where
+    Action: std::fmt::Debug + Send + 'static,
+    State: PartialEq + Clone + Send + 'static,
+{
+    fn observe(&self) -> broadcast::Receiver<()> {
+        match &self.engine {
+            EngineHolder::Parent(parent) => parent.change_observer.observe(),
+            EngineHolder::Engine(engine) => engine.value.observe(),
         }
     }
 }
@@ -107,6 +141,15 @@ where
     }
 }
 
+impl<T> ChangeObserver for Arc<T>
+where
+    T: ChangeObserver,
+{
+    fn observe(&self) -> broadcast::Receiver<()> {
+        self.deref().observe()
+    }
+}
+
 impl<State, Action> ActionSender for Store<State, Action>
 where
     Action: std::fmt::Debug + Send + 'static,
@@ -117,7 +160,7 @@ where
     fn send(&self, action: Action) {
         match &self.engine {
             EngineHolder::Engine(engine) => engine.value.send(action),
-            EngineHolder::Parent(sender) => sender.send(action),
+            EngineHolder::Parent(sender) => sender.action_sender.send(action),
         }
     }
 }
@@ -139,8 +182,6 @@ where
 
 #[cfg(test)]
 mod test {
-    use anyhow::{anyhow, bail};
-
     use super::*;
     use crate::Effect;
 
