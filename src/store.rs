@@ -72,11 +72,8 @@ where
     Action: std::fmt::Debug + Send + 'static,
     State: PartialEq + Clone + Send + Sync + 'static,
 {
-    pub fn new<R: Reducer<State, Action> + Sync + Send + 'static>(
-        state: State,
-        reducer: R,
-    ) -> Self {
-        let engine = StoreEngine::new(state, reducer);
+    pub fn new<R: Reducer<State, Action> + Sync + Send + 'static>(state: State) -> Self {
+        let engine = StoreEngine::new::<R>(state);
         let handle = engine.run_loop();
         let store_engine_data = StoreEngineData {
             value: Arc::new(engine),
@@ -95,8 +92,16 @@ where
 
     pub fn state(&self) -> BorrowedState<'_, State> {
         match &self.engine {
-            EngineHolder::Parent(_parent) => todo!("Implement for scoped Store"),
+            EngineHolder::Parent(parent) => parent.state_provider.state(),
             EngineHolder::Engine(engine) => engine.value.state(),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn engine(&self) -> &StoreEngine<State, Action> {
+        match &self.engine {
+            EngineHolder::Parent(_) => todo!("Not available"),
+            EngineHolder::Engine(engine) => &engine.value,
         }
     }
 
@@ -228,16 +233,43 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::time::Duration;
+
     use super::*;
     use crate::Effect;
+
+    #[derive(Default, Clone, PartialEq, Debug)]
+    struct ChildState {
+        child_counter: i32,
+    }
+
+    #[derive(Debug)]
+    enum ChildAction {
+        Increment,
+    }
+
+    #[derive(Default)]
+    struct ChildFeature {}
+    impl Reducer<ChildState, ChildAction> for ChildFeature {
+        fn reduce(state: &mut ChildState, action: ChildAction) -> Effect<ChildAction> {
+            match action {
+                ChildAction::Increment => {
+                    state.child_counter += 1;
+                    Effect::none()
+                }
+            }
+        }
+    }
 
     #[derive(Default, Clone, PartialEq)]
     struct State {
         counter: i32,
+        child: ChildState,
     }
 
     #[derive(Debug)]
     enum Action {
+        Child(ChildAction),
         Increment,
         Quit,
     }
@@ -246,13 +278,14 @@ mod test {
     struct Feature {}
     impl Feature {
         fn store() -> Store<State, Action> {
-            Store::new(Default::default(), Self::default())
+            Store::new::<Self>(Default::default())
         }
     }
 
     impl Reducer<State, Action> for Feature {
-        fn reduce(&self, state: &mut State, action: Action) -> Effect<Action> {
+        fn reduce(state: &mut State, action: Action) -> Effect<Action> {
             match action {
+                Action::Child(a) => ChildFeature::reduce(&mut state.child, a).map(Action::Child),
                 Action::Increment => {
                     state.counter += 1;
                     Effect::none()
@@ -263,7 +296,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_simple_action() -> anyhow::Result<()> {
+    async fn simple_action() -> anyhow::Result<()> {
         let store = Feature::store();
         store.send(Action::Increment);
         store.observe().recv().await?;
@@ -272,7 +305,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_closes_on_quit() -> anyhow::Result<()> {
+    async fn closes_on_quit() -> anyhow::Result<()> {
         let store = Feature::store();
         store.send(Action::Increment);
         store.observe().recv().await?;
@@ -286,5 +319,38 @@ mod test {
         );
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn multiple_scopes_not_hang() -> anyhow::Result<()> {
+        let store = Feature::store();
+        let engine_data = store.engine().data.clone();
+        let child = store.scope(|s| &s.child, Action::Child);
+        child.send(ChildAction::Increment);
+        store.observe().recv().await?;
+
+        let state = store.state();
+        let child_state = child.state();
+        assert_eq!(state.child, *child_state);
+
+        drop(child_state);
+        drop(state);
+        tokio::spawn(async move {
+            let _gotcha = engine_data.state.write();
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reentrant_mutex() {
+        let m = Arc::new(parking_lot::ReentrantMutex::new(10));
+        let read = m.lock();
+        let cloned_m = m.clone();
+        tokio::spawn(async move {
+            let _gotcha = cloned_m.lock();
+        });
+        drop(read);
     }
 }

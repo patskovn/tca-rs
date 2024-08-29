@@ -7,8 +7,8 @@ where
     MappedState: Send,
     F: Fn(&State) -> &MappedState + Clone + Send + 'static,
 {
-    _parent: Box<dyn StateProvider<State = State> + Sync>,
-    _map: F,
+    parent: Box<dyn StateProvider<State = State> + Sync>,
+    map: F,
     _phantom: std::marker::PhantomData<fn(State)>,
 }
 
@@ -20,8 +20,8 @@ where
 {
     pub fn new(parent: Box<dyn StateProvider<State = State> + Sync>, map: F) -> Self {
         Self {
-            _parent: parent,
-            _map: map,
+            parent,
+            map,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -36,6 +36,6 @@ where
     type State = MappedState;
 
     fn state(&self) -> BorrowedState<'_, Self::State> {
-        todo!("Not implemented")
+        BorrowedState::map(self.parent.state(), self.map.clone())
     }
 }

@@ -1,4 +1,4 @@
-pub type BorrowedState<'a, State> = std::sync::MutexGuard<'a, State>;
+pub type BorrowedState<'a, State> = parking_lot::MappedRwLockReadGuard<'a, State>;
 
 pub trait StateProvider: Send {
     type State;

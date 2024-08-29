@@ -16,10 +16,11 @@ use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 
 type EventReceiver<T> = tokio::sync::mpsc::UnboundedReceiver<T>;
+type ReduceHandler<State, Action> = dyn Fn(&mut State, Action) -> Effect<Action> + Sync + Send;
 
-struct EngineData<State, Action: Send + 'static> {
-    state: std::sync::Mutex<State>,
-    reducer: Box<dyn Reducer<State, Action> + Sync + Send + 'static>,
+pub(crate) struct EngineData<State, Action: Send + 'static> {
+    pub(crate) state: parking_lot::RwLock<State>,
+    reducer: Box<ReduceHandler<State, Action>>,
     event_sender: Arc<EventSenderHolder<Action>>,
     event_reciever: Mutex<EventReceiver<StoreEvent<Action>>>,
     redraw_sender: std::sync::RwLock<Option<broadcast::Sender<()>>>,
@@ -31,7 +32,7 @@ where
     Action: Send + 'static,
     State: PartialEq + Clone + Send + Sync + 'static,
 {
-    data: Arc<EngineData<State, Action>>,
+    pub(crate) data: Arc<EngineData<State, Action>>,
 }
 
 impl<State, Action> StoreEngine<State, Action>
@@ -39,15 +40,15 @@ where
     Action: std::fmt::Debug + Send,
     State: PartialEq + Clone + Send + Sync + 'static,
 {
-    pub fn new(state: State, reducer: impl Reducer<State, Action> + Sync + Send + 'static) -> Self {
+    pub fn new<R: Reducer<State, Action> + Sync + Send + 'static>(state: State) -> Self {
         let (event_sender, event_reciever) =
             tokio::sync::mpsc::unbounded_channel::<StoreEvent<Action>>();
 
         let (tx, _) = broadcast::channel::<()>(10);
 
         let data = EngineData {
-            state: std::sync::Mutex::new(state),
-            reducer: Box::new(reducer),
+            state: parking_lot::RwLock::new(state),
+            reducer: Box::new(R::reduce),
             event_sender: Arc::new(EventSenderHolder::new(event_sender)),
             event_reciever: Mutex::new(event_reciever),
             redraw_sender: std::sync::RwLock::new(Some(tx)),
@@ -108,9 +109,9 @@ where
     Action: Send,
 {
     let effect = {
-        let mut state = data.state.lock().unwrap();
+        let mut state = data.state.write();
         let state_before = state.clone();
-        let effect = data.reducer.reduce(&mut state, action);
+        let effect = (data.reducer)(&mut state, action);
         let has_changes = state_before != *state;
         drop(state);
 
@@ -178,7 +179,7 @@ where
     type State = State;
 
     fn state(&self) -> BorrowedState<'_, State> {
-        self.data.state.lock().unwrap()
+        parking_lot::RwLockReadGuard::map(self.data.state.read(), |s| s)
     }
 }
 
@@ -196,13 +197,13 @@ mod test {
     struct Feature {}
 
     impl Reducer<State, Action> for Feature {
-        fn reduce(&self, _state: &mut State, _action: Action) -> Effect<Action> {
+        fn reduce(_state: &mut State, _action: Action) -> Effect<Action> {
             Effect::none()
         }
     }
 
     #[tokio::test]
     async fn test_run_loop_is_parallel() {
-        let _engine = StoreEngine::new(State::default(), Feature::default());
+        let _engine = StoreEngine::new::<Feature>(State::default());
     }
 }
