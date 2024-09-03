@@ -233,10 +233,9 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::time::Duration;
-
     use super::*;
     use crate::Effect;
+    use tokio::sync::Semaphore;
 
     #[derive(Default, Clone, PartialEq, Debug)]
     struct ChildState {
@@ -274,13 +273,7 @@ mod test {
         Quit,
     }
 
-    #[derive(Default)]
     struct Feature {}
-    impl Feature {
-        fn store() -> Store<State, Action> {
-            Store::new::<Self>(Default::default())
-        }
-    }
 
     impl Reducer<State, Action> for Feature {
         fn reduce(state: &mut State, action: Action) -> Effect<Action> {
@@ -297,7 +290,7 @@ mod test {
 
     #[tokio::test]
     async fn simple_action() -> anyhow::Result<()> {
-        let store = Feature::store();
+        let store = Feature::default_store();
         store.send(Action::Increment);
         store.observe().recv().await?;
         assert_eq!(store.state().counter, 1);
@@ -306,7 +299,7 @@ mod test {
 
     #[tokio::test]
     async fn closes_on_quit() -> anyhow::Result<()> {
-        let store = Feature::store();
+        let store = Feature::default_store();
         store.send(Action::Increment);
         store.observe().recv().await?;
 
@@ -323,22 +316,27 @@ mod test {
 
     #[tokio::test]
     async fn multiple_scopes_not_hang() -> anyhow::Result<()> {
-        let store = Feature::store();
+        let semaphore = Arc::new(Semaphore::new(1));
+        let store = Feature::default_store();
         let engine_data = store.engine().data.clone();
         let child = store.scope(|s| &s.child, Action::Child);
         child.send(ChildAction::Increment);
         store.observe().recv().await?;
 
         let state = store.state();
-        let child_state = child.state();
-        assert_eq!(state.child, *child_state);
 
+        let semaphore_lock = semaphore.clone().acquire_owned().await?;
+        tokio::spawn(async move {
+            drop(semaphore_lock);
+            let _gotcha = engine_data.state.lock();
+        });
+
+        // Waiting for write lock to be requested
+        let _a = semaphore.clone().acquire_owned().await?;
+
+        let child_state = child.state();
         drop(child_state);
         drop(state);
-        tokio::spawn(async move {
-            let _gotcha = engine_data.state.write();
-        });
-        tokio::time::sleep(Duration::from_millis(100)).await;
 
         Ok(())
     }

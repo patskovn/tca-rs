@@ -19,7 +19,7 @@ type EventReceiver<T> = tokio::sync::mpsc::UnboundedReceiver<T>;
 type ReduceHandler<State, Action> = dyn Fn(&mut State, Action) -> Effect<Action> + Sync + Send;
 
 pub(crate) struct EngineData<State, Action: Send + 'static> {
-    pub(crate) state: parking_lot::RwLock<State>,
+    pub(crate) state: parking_lot::ReentrantMutex<State>,
     reducer: Box<ReduceHandler<State, Action>>,
     event_sender: Arc<EventSenderHolder<Action>>,
     event_reciever: Mutex<EventReceiver<StoreEvent<Action>>>,
@@ -47,7 +47,7 @@ where
         let (tx, _) = broadcast::channel::<()>(10);
 
         let data = EngineData {
-            state: parking_lot::RwLock::new(state),
+            state: parking_lot::ReentrantMutex::new(state),
             reducer: Box::new(R::reduce),
             event_sender: Arc::new(EventSenderHolder::new(event_sender)),
             event_reciever: Mutex::new(event_reciever),
@@ -109,11 +109,14 @@ where
     Action: Send,
 {
     let effect = {
-        let mut state = data.state.write();
-        let state_before = state.clone();
-        let effect = (data.reducer)(&mut state, action);
-        let has_changes = state_before != *state;
-        drop(state);
+        let locked_state = data.state.lock();
+        let mut new_state = locked_state.clone();
+        let effect = (data.reducer)(&mut new_state, action);
+        let has_changes = *locked_state != new_state;
+        unsafe {
+            *data.state.data_ptr() = new_state;
+        }
+        drop(locked_state);
 
         if has_changes {
             if let Ok(redraw) = data.redraw_sender.read() {
@@ -179,13 +182,14 @@ where
     type State = State;
 
     fn state(&self) -> BorrowedState<'_, State> {
-        parking_lot::RwLockReadGuard::map(self.data.state.read(), |s| s)
+        parking_lot::ReentrantMutexGuard::map(self.data.state.lock(), |s| s)
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+    use tokio::sync::Semaphore;
 
     #[derive(Default, Clone, PartialEq)]
     struct State {}
@@ -205,5 +209,45 @@ mod test {
     #[tokio::test]
     async fn test_run_loop_is_parallel() {
         let _engine = StoreEngine::new::<Feature>(State::default());
+    }
+
+    #[tokio::test]
+    async fn reentrant_mutex_not_locks() -> anyhow::Result<()> {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let semaphore_lock = semaphore.clone().acquire_owned().await?;
+        let data = Arc::new(parking_lot::ReentrantMutex::new(0)); // Start with 0 instead of 10 for simplicity
+
+        let iterations = 1_000_000;
+        let move_data = data.clone();
+
+        // Spawn a new task that will modify the data in a loop
+        let handle = tokio::spawn(async move {
+            drop(semaphore_lock);
+            for _ in 0..iterations {
+                let lock = move_data.lock();
+                let raw_data = move_data.data_ptr();
+                unsafe { *raw_data += 1 };
+                drop(lock);
+            }
+        });
+
+        // Make sure other thread started
+        let _a = semaphore.clone().acquire_owned().await?;
+
+        // Main task also modifies the data in a loop
+        for _ in 0..iterations {
+            let lock = data.lock();
+            let raw_data = data.data_ptr();
+            unsafe { *raw_data += 1 };
+            drop(lock);
+        }
+
+        handle.await.unwrap(); // Wait for the spawned task to finish
+
+        // Verify the final value of the data
+        let final_value = *data.lock();
+        assert_eq!(final_value, iterations * 2); // Should be 200 if everything is correct
+
+        Ok(())
     }
 }

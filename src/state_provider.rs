@@ -1,4 +1,4 @@
-pub type BorrowedState<'a, State> = parking_lot::MappedRwLockReadGuard<'a, State>;
+pub type BorrowedState<'a, State> = parking_lot::MappedReentrantMutexGuard<'a, State>;
 
 pub trait StateProvider: Send {
     type State;
