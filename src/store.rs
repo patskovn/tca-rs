@@ -97,10 +97,10 @@ where
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn engine(&self) -> &StoreEngine<State, Action> {
         match &self.engine {
-            EngineHolder::Parent(_) => todo!("Not available"),
+            EngineHolder::Parent(_) => panic!("Should be used only on parent store for testing"),
             EngineHolder::Engine(engine) => &engine.value,
         }
     }
@@ -247,7 +247,6 @@ mod test {
         Increment,
     }
 
-    #[derive(Default)]
     struct ChildFeature {}
     impl Reducer<ChildState, ChildAction> for ChildFeature {
         fn reduce(state: &mut ChildState, action: ChildAction) -> Effect<ChildAction> {

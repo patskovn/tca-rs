@@ -1,7 +1,6 @@
 use crate::action_sender::ActionSender;
 use crate::action_sender::AnyActionSender;
 use crate::change_observer::ChangeObserver;
-use crate::effect::AsyncActionJob;
 use crate::effect::Effect;
 use crate::effect::EffectValue;
 use crate::event_sender_holder::EventSenderHolder;
@@ -85,13 +84,12 @@ where
                                 }
                                 EffectValue::Async(job) => {
                                     let any_sender = AnyActionSender::new(Box::new(data.event_sender.clone()));
-                                    let _andle = join_set.spawn(handle_async(job, any_sender));
+                                    join_set.spawn(job(any_sender));
                                 }
                             }
                         }
                         StoreEvent::Action(action) => {
-                            // TODO: Should we handle it here cause slightly faster?
-                            data.event_sender.send_event(StoreEvent::Effect(Effect::send(action)));
+                            process(&data, action).await;
                         }
                         }
                     }
@@ -133,13 +131,6 @@ where
         effect
     };
     data.event_sender.send_event(StoreEvent::Effect(effect));
-}
-
-async fn handle_async<Action: Send + 'static>(
-    job: AsyncActionJob<Action>,
-    event_sender: AnyActionSender<Action>,
-) {
-    job(event_sender).await
 }
 
 impl<State, Action> ChangeObserver for StoreEngine<State, Action>
@@ -190,26 +181,6 @@ where
 mod test {
     use super::*;
     use tokio::sync::Semaphore;
-
-    #[derive(Default, Clone, PartialEq)]
-    struct State {}
-
-    #[derive(Debug)]
-    enum Action {}
-
-    #[derive(Default)]
-    struct Feature {}
-
-    impl Reducer<State, Action> for Feature {
-        fn reduce(_state: &mut State, _action: Action) -> Effect<Action> {
-            Effect::none()
-        }
-    }
-
-    #[tokio::test]
-    async fn test_run_loop_is_parallel() {
-        let _engine = StoreEngine::new::<Feature>(State::default());
-    }
 
     #[tokio::test]
     async fn reentrant_mutex_not_locks() -> anyhow::Result<()> {
