@@ -213,11 +213,11 @@ mod test {
             drop(lock);
         }
 
-        handle.await.unwrap(); // Wait for the spawned task to finish
+        handle.await?; // Wait for the spawned task to finish
 
         // Verify the final value of the data
         let final_value = *data.lock();
-        assert_eq!(final_value, iterations * 2); // Should be 200 if everything is correct
+        assert_eq!(final_value, iterations * 2);
 
         Ok(())
     }
