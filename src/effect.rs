@@ -39,6 +39,31 @@ where
         }
     }
 
+    /// Wraps an asynchronous unit of work that can emit actions any number of times in an effect.
+    ///
+    /// For example, if you had an async stream in a dependency client:
+    ///
+    /// ```rust
+    /// struct EventsClient<F: Fn() -> Stream<Item = Event> {
+    ///   events: F,
+    /// }
+    /// ```
+    ///
+    /// Then you could attach to it in a `run` effect and sending each action of
+    /// the stream back into the system:
+    ///
+    /// ```rust
+    /// match action {
+    ///     Action::StartButtonTapped => {
+    ///         Effect::run(async move |send| {
+    ///             let events_client = EventsClient::new().events();
+    ///             while let Some(event) = events_client.next().await {
+    ///                 send.send(Action::Event(event));
+    ///             }
+    ///         })
+    ///     }
+    /// }
+    /// ```
     pub fn run<T, Fut>(job: T) -> Self
     where
         Fut: Future<Output = ()> + Send + 'static,
@@ -55,18 +80,23 @@ where
         }
     }
 
+    /// An effect that does nothing and completes immediately. Useful for situations where you must
+    /// return an effect, but you don't need to do anything.
     pub fn none() -> Self {
         Self {
             value: EffectValue::None,
         }
     }
 
+    /// Effect that stops the reducer engine and drops observation stream, usually to gracefully
+    /// exit the application.
     pub fn quit() -> Self {
         Self {
             value: EffectValue::Quit,
         }
     }
 
+    /// Initializes an effect that immediately emits the action passed in.
     pub fn send(action: Action) -> Self {
         Self {
             value: EffectValue::Send(action),

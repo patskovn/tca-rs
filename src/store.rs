@@ -14,6 +14,86 @@ use crate::StateProvider;
 
 use super::engine::StoreEngine;
 
+/// A store represents the runtime that powers the application. It is the object that you will pass
+/// around to views that need to interact with the application.
+///
+/// You will typically construct a single one of these at the root of your application:
+///
+/// ```rust
+/// let store = tca::Store::new::<Feature>(State::default());
+/// let mut redraw_events = store.observe();
+/// let mut terminal_events = crossterm::event::EventStream::new();
+///
+/// loop {
+///     let crossterm_event = terminal_events.next().fuse();
+///     let redraw_event = redraw_events.recv().fuse();
+///     tokio::select! {
+///         maybe_redraw = redraw_event => {
+///             match maybe_redraw {
+///                 Ok(()) => {
+///                     terminal.draw(|f| ui(f, &state))?;
+///                 },
+///                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+///                     break;
+///                 },
+///                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+///                     continue;
+///                 }    
+///             }
+///         }
+///         maybe_event = crossterm_event => {
+///             match maybe_event {
+///                 Some(Ok(evt)) => store.send(Action::Event(evt)),
+///                 Some(Err(err)) => return Err(err.into()),
+///                 None => continue,
+///             }
+///         }
+///     }
+/// }
+/// ```
+///
+/// …and then use the `scope(state:action:)` method to derive more focused stores that can be
+/// passed to consecutive rendering.
+///
+/// ### Scoping
+///
+/// The most important operation defined on `Store` is the `scope(state:action:)` method,
+/// which allows you to transform a store into one that deals with child state and actions. This is
+/// necessary for passing stores to subviews that only care about a small portion of the entire
+/// application's domain.
+///
+/// For example, if an application has a tab view at its root with tabs for activity, search, and
+/// profile, then we can model the domain like this:
+///
+/// ```rust
+/// struct AppState {
+///     activity: activity::State,
+/// }
+/// enum AppAction {
+///     Activity(activity::Action),
+/// }
+///
+/// struct Feature {}
+/// impl tca::Reducer<AppState, AppAction> for Feature {
+///     /* Implementation */
+/// }
+/// ```
+///
+/// We can construct a view for each of these domains by applying `scope(state:action:)` to
+/// a store that holds onto the full app domain in order to transform it into a store for each
+/// subdomain:
+///
+/// ```rust
+/// fn draw_app(frame: &mut Frame, store: &Store<AppState, AppAction) {
+///     activity::draw(frame, store.scope(|s| &s.activity, AppAction::Activity));
+/// }
+/// ```
+///
+/// ### Thread safety
+///
+/// The `Store` class is thread-safe, and so all interactions with an instance of `Store`
+/// (including all of its child stores) can be done on the any thread.
+#[doc(hidden)]
 pub struct Store<State, Action>
 where
     Action: std::fmt::Debug + Send + 'static,
