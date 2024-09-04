@@ -2,6 +2,10 @@
 name = "tca"
 version = "0.1.0"
 edition = "2021"
+authors = ["Nikita Patskov <patskovn@gmail.com>"]
+description = "The Composable Architecture (TCA, for short) is a library for building applications in a consistent and understandable way, with composition, testing, and ergonomics in mind."
+license = "MIT"
+homepage = "https://github.com/patskovn/tca-rs.git"
 
 [dependencies]
 anyhow = "1.0.86"
