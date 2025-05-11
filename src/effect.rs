@@ -44,8 +44,11 @@ where
     /// For example, if you had an async stream in a dependency client:
     ///
     /// ```rust
-    /// struct EventsClient<F: Fn() -> Stream<Item = Event> {
-    ///   events: F,
+    /// # use futures::stream::Stream;
+    /// # struct Event {}
+    ///
+    /// struct EventsClient<S: Stream<Item = Event>, F: Fn() -> S> {
+    ///     events: F,
     /// }
     /// ```
     ///
@@ -53,16 +56,34 @@ where
     /// the stream back into the system:
     ///
     /// ```rust
+    /// # use tca::Effect;
+    /// # use futures::stream::Stream;
+    /// # use crate::tca::ActionSender;
+    /// # use futures::StreamExt;
+    /// # struct Event {}
+    ///
+    /// # struct EventsClient<S: Stream<Item = Event>, F: Fn() -> S> {
+    /// #  events: F,
+    /// # }
+    /// # enum Action {
+    /// #  StartButtonTapped,
+    /// #  Event(Event),
+    /// # }
+    /// let action = Action::StartButtonTapped;
+    /// let client = EventsClient {
+    ///     events: || futures::stream::iter(vec![Event {}]),
+    /// };
     /// match action {
     ///     Action::StartButtonTapped => {
-    ///         Effect::run(async move |send| {
-    ///             let events_client = EventsClient::new().events();
-    ///             while let Some(event) = events_client.next().await {
+    ///         Effect::run(move |send| async move {
+    ///             let mut stream = (client.events)();
+    ///             while let Some(event) = stream.next().await {
     ///                 send.send(Action::Event(event));
     ///             }
     ///         })
-    ///     }
-    /// }
+    ///     },
+    ///     Action::Event(_) => todo!("Handle events"),
+    /// };
     /// ```
     pub fn run<T, Fut>(job: T) -> Self
     where

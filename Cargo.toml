@@ -10,6 +10,13 @@ homepage = "https://github.com/patskovn/tca-rs.git"
 [lib]
 name = "tca"
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+
+[[bench]]
+name = "benchmark"
+harness = false
+
 [dependencies]
 anyhow = "1.0.86"
 async-trait = "0.1.81"

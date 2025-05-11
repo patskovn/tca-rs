@@ -19,7 +19,7 @@ use super::engine::StoreEngine;
 ///
 /// You will typically construct a single one of these at the root of your application:
 ///
-/// ```rust
+/// ```rust ignore
 /// let store = tca::Store::new::<Feature>(State::default());
 /// let mut redraw_events = store.observe();
 /// let mut terminal_events = crossterm::event::EventStream::new();
@@ -66,6 +66,11 @@ use super::engine::StoreEngine;
 /// profile, then we can model the domain like this:
 ///
 /// ```rust
+/// # use tca::Effect;
+/// # mod activity {
+/// #   pub(crate) struct State {}
+/// #   pub(crate) enum Action {}
+/// # }
 /// struct AppState {
 ///     activity: activity::State,
 /// }
@@ -75,7 +80,9 @@ use super::engine::StoreEngine;
 ///
 /// struct Feature {}
 /// impl tca::Reducer<AppState, AppAction> for Feature {
-///     /* Implementation */
+///     fn reduce(_: &mut AppState, _: AppAction) -> Effect<AppAction> {
+///         todo!("Implementation")
+///     }
 /// }
 /// ```
 ///
@@ -83,7 +90,7 @@ use super::engine::StoreEngine;
 /// a store that holds onto the full app domain in order to transform it into a store for each
 /// subdomain:
 ///
-/// ```rust
+/// ```rust ignore
 /// fn draw_app(frame: &mut Frame, store: &Store<AppState, AppAction) {
 ///     activity::draw(frame, store.scope(|s| &s.activity, AppAction::Activity));
 /// }

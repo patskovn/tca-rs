@@ -118,13 +118,10 @@ where
 
         if has_changes {
             if let Ok(redraw) = data.redraw_sender.read() {
-                match redraw.deref() {
-                    Some(val) => {
-                        // We may have error here if buffer already filled in.
-                        // But that's okay, we'll just skip one redraw pass.
-                        let _ = val.send(());
-                    }
-                    None => {}
+                if let Some(sender) = redraw.deref() {
+                    // We may have error here if buffer already filled in.
+                    // But that's okay, we'll just skip one redraw pass.
+                    let _ = sender.send(());
                 }
             }
         }
